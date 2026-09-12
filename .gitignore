@@ -5,8 +5,17 @@ node_modules
 fly.toml
 
 .env
-.env*.local
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler
 .worktrees
 .claude
+.workbuddy/
+.trae/
+.zcode/
 docs/superpowers
 frontend/build
+*.sqlite
+*.db

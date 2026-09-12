@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import axios from "axios";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Home } from "./pages/Home.tsx";
 import { ApiDocs } from "./pages/ApiDocs.tsx";
@@ -24,12 +24,17 @@ function App() {
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [isUnlocking, setIsUnlocking] = useState(false);
 
-  useEffect(() => {
-    // 组件挂载后，从后端 /config 接口获取前端配置
-    axios.get<AppConfig>("/config").then((res) => {
+  const loadConfig = useCallback(() => {
+    // 从后端 /config 接口获取前端配置
+    return axios.get<AppConfig>("/config").then((res) => {
       setConfig(res.data);
     });
-  }, []); // 空依赖数组确保此 effect 只运行一次
+  }, []);
+
+  useEffect(() => {
+    // 组件挂载后加载配置
+    loadConfig();
+  }, [loadConfig]);
 
   useEffect(() => {
     if (!config) {
@@ -55,6 +60,13 @@ function App() {
     setUnlockError(null);
     try {
       await unlockSite(password);
+      // 解锁成功后重新拉取 /config：cookiesSecret 只在已解锁时才下发，
+      // 不刷新的话 getPassword() 会一直用挂载时拿到的空值。
+      try {
+        await loadConfig();
+      } catch {
+        // 配置刷新失败不影响解锁本身
+      }
       setIsUnlocked(true);
     } catch (err: any) {
       setUnlockError(err?.message || "Invalid password");
