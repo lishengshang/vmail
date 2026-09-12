@@ -21,6 +21,17 @@ import {
 import { useConfig } from "../hooks/useConfig.ts";
 // feat: 导入加密函数
 import { encrypt } from "../lib/utlis.ts";
+// feat: 导入本地地址簿与多开切换组件
+import {
+  listMailboxes,
+  upsertMailbox,
+  touchMailbox,
+  removeMailbox,
+  renameMailbox,
+  type MailboxRecord,
+} from "../lib/mailboxHistory.ts";
+import { MailboxSwitcher } from "../components/MailboxSwitcher.tsx";
+import { ConfirmDialog } from "../components/ConfirmDialog.tsx";
 
 // feat: 导入密码模态框和相关 hook
 import { usePasswordModal } from "../components/password.tsx";
@@ -70,6 +81,16 @@ export function Home() {
       return expiry ? parseInt(expiry, 10) : undefined;
     },
   );
+  // feat: 本地地址簿，用于多开虚拟邮箱；初始把 cookie 里的现有地址补录进去
+  const [mailboxes, setMailboxes] = useState<MailboxRecord[]>(() => {
+    const current = Cookies.get("userMailbox");
+    return current ? upsertMailbox({ address: current }) : listMailboxes();
+  });
+  // feat: 待确认的删除请求，带上目标地址以免多开后删错收件箱
+  const [pendingDelete, setPendingDelete] = useState<{
+    ids: string[];
+    address: string;
+  } | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null); // 新增状态，用于存储当前选中的邮件
@@ -260,6 +281,15 @@ export function Home() {
         requireTurnstile ? turnstileToken : undefined,
       );
       const mailbox = authorization.mailbox;
+      // feat: 入本地地址簿。此处不能复用 getPassword()，它读的是 state 里的旧地址
+      setMailboxes(
+        upsertMailbox({
+          address: mailbox,
+          password: config.cookiesSecret
+            ? encrypt(mailbox, config.cookiesSecret)
+            : null,
+        }),
+      );
       // feat: 计算并存储过期时间戳（当前时间 + 后端配置的保留天数）
       const now = Date.now();
       const expires = now + retentionDays * 24 * 60 * 60 * 1000;
@@ -294,6 +324,60 @@ export function Home() {
     setSelectedEmail(null); // 清除选中的邮件
     setExpiryTimestamp(undefined); // 清除过期时间状态
     queryClient.invalidateQueries({ queryKey: ["emails"] }); // 清理缓存
+  };
+
+  // feat: 切换到本地地址簿里的某个地址
+  const switchMailbox = useCallback(
+    async (record: MailboxRecord) => {
+      const expires =
+        record.createdAt + retentionDays * 24 * 60 * 60 * 1000;
+      // 读信接口不需要鉴权，先本地瞬时切换，不等网络
+      Cookies.set("userMailbox", record.address, { expires: retentionDays });
+      Cookies.set("emailExpiry", expires.toString(), {
+        expires: retentionDays,
+      });
+      setAddress(record.address);
+      setExpiryTimestamp(expires);
+      setSelectedEmail(null);
+      setSelectedIds([]);
+      setHasReceivedEmail(false);
+      mailboxMetaSignatureRef.current = null;
+      setMailboxes(touchMailbox(record.address, true));
+
+      // 发信凭证只有 24 小时，拿不到也不影响收信
+      try {
+        if (!record.password) {
+          throw new Error("NO_PASSWORD");
+        }
+        const data = await loginByPassword(record.password);
+        if (data.mailboxToken) {
+          Cookies.set("mailboxToken", data.mailboxToken, { expires: 1 });
+          setMailboxToken(data.mailboxToken);
+        } else {
+          Cookies.remove("mailboxToken");
+          setMailboxToken("");
+        }
+      } catch {
+        Cookies.remove("mailboxToken");
+        setMailboxToken("");
+        if (record.password) {
+          // 换过 COOKIES_SECRET 后，历史里的密文解不出地址
+          toast.error(t("This password is no longer valid"));
+        }
+      }
+    },
+    [retentionDays, t],
+  );
+
+  // feat: 从地址簿移除一条（不动正在使用的地址）
+  const handleRemoveMailbox = (record: MailboxRecord) => {
+    setMailboxes(removeMailbox(record.address));
+    toast.success(t("Removed from list"));
+  };
+
+  // feat: 给地址写备注，方便记住它是做什么用的
+  const handleRenameMailbox = (address: string, label: string) => {
+    setMailboxes(renameMailbox(address, label));
   };
 
   // feat: 手动刷新邮件
@@ -335,20 +419,38 @@ export function Home() {
         setSelectedEmail(null); // 如果删除的邮件是被选中的，则清除
       }
       queryClient.invalidateQueries({ queryKey: ["emails", address] }); // 刷新列表
+      setPendingDelete(null); // 关闭确认弹窗
     },
     onError: () => {
       toast.error(t("Failed to delete emails")); // feat: 使用全局 toast 提示
+      setPendingDelete(null); // 关闭确认弹窗
     },
   });
 
-  // 定义 handleDeleteEmails 函数
+  // 定义 handleDeleteEmails 函数：删除不可恢复，先弹确认
   const handleDeleteEmails = (ids: string[]) => {
     if (ids.length === 0) {
       toast.error(t("Please select emails to delete"));
       return;
     }
-    deleteMutation.mutate(ids);
+    if (!address) {
+      return;
+    }
+    setPendingDelete({ ids, address });
   };
+
+  // 确认弹窗里点"删除"后才真正执行
+  const confirmDeleteEmails = () => {
+    if (!pendingDelete) {
+      return;
+    }
+    deleteMutation.mutate(pendingDelete.ids);
+  };
+
+  // 弹窗关闭（点遮罩或 Esc）：只丢弃待确认请求，不删任何东西
+  const closeDeleteConfirm = useCallback(() => {
+    setPendingDelete(null);
+  }, []);
 
   // feat: 处理密码登录的函数
   // fix: 移除登录时的 turnstile token 校验逻辑
@@ -357,6 +459,8 @@ export function Home() {
     try {
       // fix: 调用更新后的 loginByPassword 函数，不再传递 token
       const data = await loginByPassword(password);
+      // feat: 登录过的地址一并入本地地址簿，输入的密码本身就是密文
+      setMailboxes(upsertMailbox({ address: data.address, password }));
       // feat: 登录成功后也设置过期时间戳（与后端保留天数一致）
       const now = Date.now();
       const expires = now + retentionDays * 24 * 60 * 60 * 1000;
@@ -407,6 +511,18 @@ export function Home() {
     <div className="h-full flex flex-col gap-4 md:flex-row justify-center items-start mt-24 mx-6 md:mx-10">
       <PasswordModal onLogin={handleLogin} isLoggingIn={isLoggingIn} />
       <SenderModal />
+      <ConfirmDialog
+        showModal={!!pendingDelete}
+        setShowModal={closeDeleteConfirm}
+        title={t("Confirm deletion")}
+        confirmLabel={t("Delete")}
+        onConfirm={confirmDeleteEmails}
+        isPending={deleteMutation.isPending}>
+        {t("Delete {{total}} messages from {{address}}? This cannot be undone.", {
+          total: pendingDelete?.ids.length ?? 0,
+          address: pendingDelete?.address ?? "",
+        })}
+      </ConfirmDialog>
       {selectedEmail && (
         <InfoModal
           showModal={showEmailModal}
@@ -619,6 +735,14 @@ export function Home() {
             </p>
           </div>
         )}
+        {/* feat: 放在 address 分支之外，否则"停止"后就切不回旧地址 */}
+        <MailboxSwitcher
+          mailboxes={mailboxes}
+          currentAddress={address}
+          onSwitch={switchMailbox}
+          onRemove={handleRemoveMailbox}
+          onRename={handleRenameMailbox}
+        />
       </div>
 
       {/* 右侧邮件列表或邮件详情 */}

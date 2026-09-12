@@ -133,5 +133,17 @@
   "Addresses Created": "Addresses Created",
   "Emails Received": "Emails Received",
   "API Keys Created": "API Keys Created",
-  "API Calls": "API Calls"
+  "API Calls": "API Calls",
+  "My addresses": "My addresses",
+  "New mail": "New mail",
+  "Label": "Label",
+  "Created at": "Created at",
+  "Remove from list": "Remove from list",
+  "Removed from list": "Removed from list",
+  "Show all": "Show all",
+  "Collapse": "Collapse",
+  "Cancel": "Cancel",
+  "Confirm deletion": "Confirm deletion",
+  "This password is no longer valid": "This password is no longer valid",
+  "Delete {{total}} messages from {{address}}? This cannot be undone.": "Delete {{total}} messages from {{address}}? This cannot be undone."
 }

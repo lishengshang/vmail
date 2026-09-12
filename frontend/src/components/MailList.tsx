@@ -233,7 +233,7 @@ export function MailList({
                   <input
                     type="checkbox"
                     className="h-4 w-4 rounded bg-zinc-700 border-zinc-600 text-cyan-600 focus:ring-cyan-500"
-                    title="全选"
+                    title={t("Select all")}
                     checked={
                       selectedIds.length === emails.length && emails.length > 0
                     }
@@ -243,7 +243,7 @@ export function MailList({
                     onClick={() => onDelete(selectedIds)}
                     disabled={selectedIds.length === 0 || isDeleting}
                     className="p-1 rounded text-red-500 disabled:text-gray-500 hover:text-red-400"
-                    title="删除选中">
+                    title={t("Delete selected")}>
                     <TrashIcon className="w-5 h-5" />
                   </button>
                 </>

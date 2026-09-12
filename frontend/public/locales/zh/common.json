@@ -133,5 +133,17 @@
   "Addresses Created": "累计创建邮址",
   "Emails Received": "累计接收邮件",
   "API Keys Created": "累计创建 API Key",
-  "API Calls": "累计 API 调用"
+  "API Calls": "累计 API 调用",
+  "My addresses": "我的地址",
+  "New mail": "有新邮件",
+  "Label": "备注",
+  "Created at": "创建于",
+  "Remove from list": "从列表移除",
+  "Removed from list": "已从列表移除",
+  "Show all": "显示全部",
+  "Collapse": "收起",
+  "Cancel": "取消",
+  "Confirm deletion": "确认删除",
+  "This password is no longer valid": "此密码已失效",
+  "Delete {{total}} messages from {{address}}? This cannot be undone.": "确定删除 {{address}} 的 {{total}} 封邮件？此操作不可恢复。"
 }
