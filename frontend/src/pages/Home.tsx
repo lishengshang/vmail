@@ -48,6 +48,14 @@ export function Home() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
+  // 邮件保留天数：后端 0 表示不自动清理，前端用 3650 天近似"长期有效"；未下发时回退 1 天
+  const retentionDays =
+    config.emailRetentionDays > 0
+      ? config.emailRetentionDays
+      : config.emailRetentionDays === 0
+        ? 3650
+        : 1;
+
   // 状态管理
   const [address, setAddress] = useState<string | undefined>(() =>
     Cookies.get("userMailbox"),
@@ -252,11 +260,11 @@ export function Home() {
         requireTurnstile ? turnstileToken : undefined,
       );
       const mailbox = authorization.mailbox;
-      // feat: 计算并存储过期时间戳 (当前时间 + 24小时)
+      // feat: 计算并存储过期时间戳（当前时间 + 后端配置的保留天数）
       const now = Date.now();
-      const expires = now + 24 * 60 * 60 * 1000;
-      Cookies.set("userMailbox", mailbox, { expires: 1 }); // cookie 有效期1天
-      Cookies.set("emailExpiry", expires.toString(), { expires: 1 }); // 存储过期时间戳
+      const expires = now + retentionDays * 24 * 60 * 60 * 1000;
+      Cookies.set("userMailbox", mailbox, { expires: retentionDays }); // cookie 有效期与保留天数一致
+      Cookies.set("emailExpiry", expires.toString(), { expires: retentionDays }); // 存储过期时间戳
       if (authorization.mailboxToken) {
         Cookies.set("mailboxToken", authorization.mailboxToken, { expires: 1 });
       } else {
@@ -307,17 +315,15 @@ export function Home() {
       }
     }
 
-    // feat: 计算新的过期时间戳 (当前时间 + 24小时)
-    const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
-    // 计算新的 Cookie 过期时间（相对于当前时间1天）
-    const cookieExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // feat: 计算新的过期时间戳（当前时间 + 后端配置的保留天数）
+    const newExpiry = Date.now() + retentionDays * 24 * 60 * 60 * 1000;
 
     Cookies.set("emailExpiry", newExpiry.toString(), {
-      expires: cookieExpires,
-    }); // 更新 Cookie，有效期设为从现在起1天
+      expires: retentionDays,
+    }); // 更新 Cookie，有效期与保留天数一致
     setExpiryTimestamp(newExpiry); // 更新状态
     toast.success(t("Validity reset successfully")); // 修改：显示重置成功提示
-  }, [mailboxToken, t]);
+  }, [mailboxToken, retentionDays, t]);
 
   // 删除邮件的 useMutation hook
   const deleteMutation = useMutation({
@@ -351,11 +357,11 @@ export function Home() {
     try {
       // fix: 调用更新后的 loginByPassword 函数，不再传递 token
       const data = await loginByPassword(password);
-      // feat: 登录成功后也设置过期时间戳
+      // feat: 登录成功后也设置过期时间戳（与后端保留天数一致）
       const now = Date.now();
-      const expires = now + 24 * 60 * 60 * 1000;
-      Cookies.set("userMailbox", data.address, { expires: 1 });
-      Cookies.set("emailExpiry", expires.toString(), { expires: 1 });
+      const expires = now + retentionDays * 24 * 60 * 60 * 1000;
+      Cookies.set("userMailbox", data.address, { expires: retentionDays });
+      Cookies.set("emailExpiry", expires.toString(), { expires: retentionDays });
       if (data.mailboxToken) {
         Cookies.set("mailboxToken", data.mailboxToken, { expires: 1 });
       } else {

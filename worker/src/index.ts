@@ -44,6 +44,7 @@ export interface Env {
   SEND_RATE_LIMIT_PER_MINUTE?: string;
   SEND_IP_RATE_LIMIT_PER_MINUTE?: string;
   API_RATE_LIMIT_PER_MINUTE?: string;
+  EMAIL_RETENTION_DAYS?: string;
   SHOW_AFF?: string;
   ENABLE_OPENAPI?: string;
   SEND_CHANNEL?: string;
@@ -70,6 +71,15 @@ function parseRateLimitPerMinute(env: Env): number {
   return parsed;
 }
 
+// 邮件保留天数：未配置时默认 1 天（与上游行为一致），0 表示不自动清理，上限 3650 天防呆
+function parseEmailRetentionDays(env: Env): number {
+  const parsed = Number.parseInt(env.EMAIL_RETENTION_DAYS ?? '', 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 1;
+  }
+  return Math.min(parsed, 3650);
+}
+
 function parsePositiveLimit(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   if (!Number.isFinite(parsed) || parsed < 1) {
@@ -82,23 +92,70 @@ function getMailboxTokenTtlSeconds(): number {
   return 24 * 60 * 60;
 }
 
-function isSiteUnlocked(request: Request, env: Env): boolean {
+// 站点解锁 cookie 的签名密钥：优先 COOKIES_SECRET，缺失时退化为 PASSWORD。
+// 两者都为空说明站点未启用密码门禁，isSiteUnlocked 会直接放行。
+function getSiteAuthSecret(env: Env): string {
+  return env.COOKIES_SECRET || env.PASSWORD || '';
+}
+
+// 用 HMAC-SHA256 派生解锁 token。payload 中带上 PASSWORD，
+// 这样修改密码后旧的解锁 cookie 会自动失效。
+async function computeSiteAuthToken(env: Env): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(getSiteAuthSecret(env)),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(`vmail-site-auth:${env.PASSWORD ?? ''}`),
+  );
+  return Array.from(new Uint8Array(signature))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// 常量时间比较，避免通过响应时间差异逐字节猜解 token
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+async function isSiteUnlocked(request: Request, env: Env): Promise<boolean> {
   if (!env.PASSWORD) {
     return true;
   }
 
+  const expected = await computeSiteAuthToken(env);
   const cookie = request.headers.get('cookie') ?? '';
   return cookie.split(';').some((part) => {
-    const [key, value] = part.trim().split('=');
-    return key === SITE_AUTH_COOKIE && value === '1';
+    const separatorIndex = part.indexOf('=');
+    if (separatorIndex === -1) {
+      return false;
+    }
+    const key = part.slice(0, separatorIndex).trim();
+    const value = part.slice(separatorIndex + 1).trim();
+    return key === SITE_AUTH_COOKIE && timingSafeEqual(value, expected);
   });
 }
 
+// 只有"渲染解锁界面所必需"的路径才免门禁。
+// 安全注意：/api/* 不再放行 —— 否则未解锁者可绕过前端直接调用 API（例如批量创建邮箱地址）。
 function shouldBypassSiteGate(pathname: string): boolean {
   if (pathname === '/' || pathname === '/index.html') {
     return true;
   }
-  if (pathname.startsWith('/api/') || pathname === '/config') {
+  // /config 必须免门禁：前端依赖它判断是否启用密码门禁，并据此渲染解锁页
+  if (pathname === '/config') {
     return true;
   }
   if (pathname === '/auth/unlock' || pathname === '/auth/logout' || pathname === '/auth/status') {
@@ -491,7 +548,7 @@ api.post('/login', async (c) => {
 
 
 // 前端配置接口
-app.get('/config', (c) => {
+app.get('/config', async (c) => {
   // feat: 将 emailDomain 拆分为数组以支持多域名
   const emailDomain = c.env.EMAIL_DOMAIN ? c.env.EMAIL_DOMAIN.split(',').map(d => d.trim()) : [];
   const turnstileEnabled = isTurnstileEnabled(c.env);
@@ -500,13 +557,18 @@ app.get('/config', (c) => {
   const sendChannel = getConfiguredSendChannel(c.env);
   const enabledSenders = sendChannel ? [sendChannel] : [];
 
+  // 安全注意：/config 是免门禁路径，而 cookiesSecret 是加解密邮箱地址的密钥。
+  // 只对已解锁的请求下发，未解锁时返回空串，避免密钥对所有访客公开。
+  const unlocked = await isSiteUnlocked(c.req.raw, c.env);
+
   return c.json({
     emailDomain: emailDomain, // 返回域名数组
     turnstileKey: c.env.TURNSTILE_KEY,
     turnstileEnabled,
-    cookiesSecret: c.env.COOKIES_SECRET,
+    cookiesSecret: unlocked ? c.env.COOKIES_SECRET : '',
     sitePasswordEnabled: Boolean(c.env.PASSWORD),
     apiRateLimitPerMinute: parseRateLimitPerMinute(c.env),
+    emailRetentionDays: parseEmailRetentionDays(c.env),
     openApiEnabled,
     showAff: c.env.SHOW_AFF === 'true',
     enabledSenders,
@@ -544,7 +606,9 @@ api.get('/stats', async (c) => {
 });
 
 app.post('/auth/unlock', async (c) => {
-  if (!c.env.PASSWORD) {
+  // 取到局部常量，便于类型收敛（Env.PASSWORD 是可选字段）
+  const sitePassword = c.env.PASSWORD;
+  if (!sitePassword) {
     return c.json({ success: true, bypassed: true });
   }
 
@@ -555,20 +619,21 @@ app.post('/auth/unlock', async (c) => {
     return c.json({ message: 'Invalid request body' }, 400);
   }
 
-  if (body.password !== c.env.PASSWORD) {
+  if (typeof body.password !== 'string' || !timingSafeEqual(body.password, sitePassword)) {
     return c.json({ message: 'Invalid password' }, 401);
   }
 
+  const siteAuthToken = await computeSiteAuthToken(c.env);
   c.header(
     'Set-Cookie',
-    `${SITE_AUTH_COOKIE}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400; Secure`,
+    `${SITE_AUTH_COOKIE}=${siteAuthToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400; Secure`,
   );
 
   return c.json({ success: true });
 });
 
-app.get('/auth/status', (c) => {
-  const unlocked = isSiteUnlocked(c.req.raw, c.env);
+app.get('/auth/status', async (c) => {
+  const unlocked = await isSiteUnlocked(c.req.raw, c.env);
   return c.json({
     unlocked,
     sitePasswordEnabled: Boolean(c.env.PASSWORD),
@@ -650,7 +715,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    if (!shouldBypassSiteGate(url.pathname) && !isSiteUnlocked(request, env)) {
+    if (!shouldBypassSiteGate(url.pathname) && !(await isSiteUnlocked(request, env))) {
       return new Response(JSON.stringify({ message: 'Site is locked' }), {
         status: 401,
         headers: {
@@ -680,9 +745,13 @@ export default {
   // 定时任务 (清理过期邮件)
   async scheduled(event, env, ctx) {
       const db = getD1DB(env.DB);
-      // 修复：将清理时间从1小时修改为24小时（1天）
-      const oneDayAgo = new Date(Date.now() - 1000 * 60 * 60 * 24);
-      await deleteExpiredEmails(db, oneDayAgo);
-      console.log(`已清理 ${oneDayAgo.toISOString()} 之前的过期邮件`); // 添加日志
+      const retentionDays = parseEmailRetentionDays(env);
+      if (retentionDays === 0) {
+        console.log('EMAIL_RETENTION_DAYS=0，跳过过期邮件清理');
+        return;
+      }
+      const expirationTime = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      await deleteExpiredEmails(db, expirationTime);
+      console.log(`已清理 ${expirationTime.toISOString()} 之前的过期邮件`);
   },
 };

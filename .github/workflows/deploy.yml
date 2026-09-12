@@ -36,15 +36,15 @@ jobs:
     steps:
       # 检出代码
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # 设置 pnpm (版本由根目录 package.json 的 "packageManager" 字段决定)
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
       # 设置 Node.js 环境
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: "pnpm"
@@ -125,6 +125,7 @@ jobs:
           else
             sed -i '/^SEND_IP_RATE_LIMIT_PER_MINUTE = /d' wrangler.toml
           fi
+          sed -i "s#\${EMAIL_RETENTION_DAYS}#${EMAIL_RETENTION_DAYS}#g" wrangler.toml
         env:
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
           D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
@@ -140,6 +141,7 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SEND_RATE_LIMIT_PER_MINUTE: ${{ secrets.SEND_RATE_LIMIT_PER_MINUTE }}
           SEND_IP_RATE_LIMIT_PER_MINUTE: ${{ secrets.SEND_IP_RATE_LIMIT_PER_MINUTE }}
+          EMAIL_RETENTION_DAYS: ${{ secrets.EMAIL_RETENTION_DAYS || '365' }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           MAILCHANNELS_API_KEY: ${{ secrets.MAILCHANNELS_API_KEY }}
           MAILBOX_TOKEN_SECRET: ${{ secrets.MAILBOX_TOKEN_SECRET }}
@@ -154,7 +156,7 @@ jobs:
 
       # 部署到 Cloudflare Workers
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}

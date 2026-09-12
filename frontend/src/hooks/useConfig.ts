@@ -7,6 +7,8 @@ export interface AppConfig {
   turnstileEnabled: boolean;
   sitePasswordEnabled: boolean;
   apiRateLimitPerMinute: number;
+  // 邮件保留天数（后端定时清理的依据），0 表示不自动清理
+  emailRetentionDays: number;
   openApiEnabled: boolean;
   // feat: 添加 cookiesSecret 到配置中，以便前端加密时使用
   cookiesSecret: string;
